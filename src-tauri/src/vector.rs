@@ -3,7 +3,7 @@
 // Importiamo le macro per la serializzazione (trasformare dati in JSON)
 // e i tratti per la matematica (Addizione, Moltiplicazione).
 use serde::{Deserialize, Serialize};
-use std::ops::{Add, AddAssign, Mul};
+use std::ops::{Add, AddAssign, Mul, SubAssign};
 
 /// Rappresenta un vettore geometrico in uno spazio 2D.
 ///
@@ -67,5 +67,12 @@ impl Mul<f64> for Vec2 {
             x: self.x * scalar,
             y: self.y * scalar,
         }
+    }
+}
+
+impl SubAssign for Vec2 {
+    fn sub_assign(&mut self, other: Self) {
+        self.x -= other.x;
+        self.y -= other.y;
     }
 }

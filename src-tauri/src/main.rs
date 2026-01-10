@@ -1,134 +1,131 @@
-// src-tauri/src/main.rs
+use tauri::{Emitter, Manager, State, WebviewWindow};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::thread;
+use std::time;
+use rand::Rng;
 
-// Disabilita la console di comando su Windows quando l'app è in release
-#![cfg_attr(
-    all(not(debug_assertions), target_os = "windows"),
-    windows_subsystem = "windows"
-)]
-
-// --- MODULI ---
-// Dichiariamo il modulo 'vector' definito nel file vector.rs
 mod vector;
 use vector::Vec2;
 
-// --- IMPORT ---
-// Emitter: Fondamentale in Tauri v2 per inviare eventi (emit) al frontend.
-// Window: Rappresenta la finestra dell'applicazione.
-use tauri::{Emitter, Window};
-use std::{thread, time};
-use serde::Serialize;
-use rand::Rng; // Libreria per la generazione di numeri casuali
-
-// --- STRUTTURE DATI ---
-
-/// Rappresenta una singola entità fisica nel sistema.
-#[derive(Clone, Serialize)]
+#[derive(Clone, serde::Serialize)]
 struct Particle {
-    pos: Vec2,      // Posizione attuale (vettore)
-    vel: Vec2,      // Velocità attuale (vettore)
-    radius: f64,    // Raggio visivo (per le collisioni future)
-    color: String,  // Colore esadecimale per il rendering
+    pos: Vec2,
+    vel: Vec2,
+    radius: f64,
+    color: String,
 }
 
-/// Rappresenta l'istantanea ("Snapshot") dell'intero sistema fisico.
-/// Questo è l'oggetto che viene serializzato in JSON e spedito a React
-/// 60 volte al secondo.
-#[derive(Clone, Serialize)]
+#[derive(Clone, serde::Serialize)]
 struct SystemState {
     particles: Vec<Particle>,
 }
 
-// --- COMANDI TAURI ---
+// CAMBIAMENTO 1: Invece di 'should_reset', usiamo 'is_running'
+struct SimulationControl {
+    is_running: Arc<AtomicBool>,
+}
 
-/// Funzione invocabile dal Frontend per avviare la simulazione.
-///
-/// NOTA ARCHITETTURALE:
-/// La simulazione viene lanciata in un `thread::spawn` separato.
-/// Se facessimo girare il loop `while` o `loop` nel thread principale,
-/// l'interfaccia grafica (GUI) si congelerebbe perché il processore
-/// sarebbe impegnato al 100% nei calcoli e non potrebbe disegnare la finestra.
+// CAMBIAMENTO 2: Nuovo comando per FERMARE tutto
 #[tauri::command]
-fn start_simulation(window: Window) {
-    // Spawna un nuovo thread (processo leggero) per la fisica
-    std::thread::spawn(move || {
-        let mut rng = rand::thread_rng();
+fn stop_simulation(state: State<SimulationControl>) {
+    // Impostiamo a FALSE. Il thread leggerà questo valore, uscirà dal loop e morirà.
+    state.is_running.store(false, Ordering::Relaxed);
+}
+
+#[tauri::command]
+fn start_simulation(window: WebviewWindow, state: State<SimulationControl>) {
+    // 1. Prima di far partire un nuovo thread, diciamo che siamo "in esecuzione"
+    state.is_running.store(true, Ordering::Relaxed);
+    
+    // Cloniamo il puntatore al flag per passarlo al thread
+    let is_running = state.is_running.clone();
+
+    thread::spawn(move || {
         let mut particles: Vec<Particle> = Vec::new();
 
-        // 1. FASE DI INIZIALIZZAZIONE (Big Bang)
-        // Creiamo 100 particelle con stati iniziali casuali
-        for _ in 0..100 {
+        // Inizializzazione (Big Bang)
+        let mut rng = rand::thread_rng();
+        for _ in 0..50 {
             particles.push(Particle {
-                pos: Vec2::new(
-                    rng.gen_range(50.0..450.0), // Posizione X casuale
-                    rng.gen_range(50.0..200.0)  // Posizione Y casuale
-                ),
-                vel: Vec2::new(
-                    rng.gen_range(-2.0..2.0),   // Velocità orizzontale
-                    rng.gen_range(-2.0..0.0)    // Velocità verticale (verso l'alto inizialmente)
-                ),
-                radius: rng.gen_range(2.0..6.0),
-                color: format!("#{:02X}{:02X}{:02X}", 
-                    rng.gen_range(100..255), // Rosso vivido
-                    rng.gen_range(100..255), // Verde vivido
-                    255                      // Blu al massimo
-                ), 
+                pos: Vec2::new(rng.gen_range(50.0..450.0), rng.gen_range(50.0..200.0)),
+                vel: Vec2::new(rng.gen_range(-2.0..2.0), rng.gen_range(-2.0..0.0)),
+                radius: rng.gen_range(6.0..12.0),
+                color: format!("#{:02X}{:02X}FF", rng.gen_range(100..255), rng.gen_range(100..255)),
             });
         }
 
-        // Costanti fisiche globali
-        let gravity = Vec2::new(0.0, 0.2); // Accelerazione verso il basso
-        let damping = 0.9;                 // Coefficiente di restituzione (perdita energia agli urti)
+        let gravity = Vec2::new(0.0, 0.8);
+        let damping = 0.9; 
 
-        // 2. LOOP DELLA FISICA (Game Loop)
-        // Questo ciclo gira all'infinito finché l'app è aperta.
+        // CAMBIAMENTO 3: Il loop controlla se deve continuare a vivere
         loop {
-            // Iteriamo su ogni particella in modo mutabile
+            // Se 'is_running' è diventato FALSE (premuto Stop), usciamo dal ciclo
+            if !is_running.load(Ordering::Relaxed) {
+                break; // Il thread finisce qui.
+            }
+
+            // --- FISICA ---
             for p in particles.iter_mut() {
-                // A. Integrazione di Eulero Semi-Implicita
-                // 1. Aggiorna velocità: v_new = v_old + accelerazione
                 p.vel += gravity;
-                // 2. Aggiorna posizione: x_new = x_old + v_new
                 p.pos += p.vel;
 
-                // B. Rilevamento Collisioni (Boundary Check)
-                
-                // Collisione Pavimento
                 if p.pos.y > 480.0 {
-                    p.pos.y = 480.0;       // Correggi compenetrazione
-                    p.vel.y *= -1.0;       // Inverti velocità (rimbalzo)
-                    p.vel = p.vel * damping; // Applica attrito
+                    p.pos.y = 480.0;
+                    p.vel.y *= -1.0;
+                    p.vel = p.vel * damping; 
                 }
-                
-                // Collisione Muri Laterali
-                if p.pos.x > 490.0 { 
-                    p.pos.x = 490.0; 
-                    p.vel.x *= -1.0; 
-                }
-                if p.pos.x < 10.0 { 
-                    p.pos.x = 10.0;  
-                    p.vel.x *= -1.0; 
+                if p.pos.x > 490.0 { p.pos.x = 490.0; p.vel.x *= -1.0; }
+                if p.pos.x < 10.0 { p.pos.x = 10.0; p.vel.x *= -1.0; }
+            }
+
+            for i in 0..particles.len() {
+                let (head, tail) = particles.split_at_mut(i + 1);
+                let p1 = &mut head[i];
+                for p2 in tail {
+                    let dx = p2.pos.x - p1.pos.x;
+                    let dy = p2.pos.y - p1.pos.y;
+                    let dist_sq = dx*dx + dy*dy;
+                    let min_dist = p1.radius + p2.radius;
+
+                    if dist_sq < min_dist * min_dist {
+                        let dist = dist_sq.sqrt();
+                        let nx = dx / dist;
+                        let ny = dy / dist;
+                        let overlap = (min_dist - dist) * 0.5;
+                        p1.pos.x -= nx * overlap; p1.pos.y -= ny * overlap;
+                        p2.pos.x += nx * overlap; p2.pos.y += ny * overlap;
+
+                        let dvx = p2.vel.x - p1.vel.x;
+                        let dvy = p2.vel.y - p1.vel.y;
+                        let vel_norm = dvx * nx + dvy * ny;
+
+                        if vel_norm > 0.0 { continue; }
+
+                        let impulse = -1.9 * vel_norm / 2.0; 
+                        let impulse_vec = Vec2::new(nx * impulse, ny * impulse);
+                        p1.vel += impulse_vec * -1.0; 
+                        p2.vel += impulse_vec;
+                    }
                 }
             }
 
-            // 3. INVIO DATI AL FRONTEND
-            // Impacchettiamo lo stato e lo spediamo via evento.
-            // .unwrap() viene usato perché se il canale si rompe, vogliamo saperlo.
-            window.emit("update-physics", SystemState { 
-                particles: particles.clone() 
-            }).unwrap();
+            if let Err(_) = window.emit("update-physics", SystemState { particles: particles.clone() }) {
+                break;
+            }
 
-            // 4. CLOCK RATE
-            // Dormiamo per ~16ms per mirare a circa 60 Frame Per Secondo (1000ms / 60 = 16.6ms)
             thread::sleep(time::Duration::from_millis(16));
         }
     });
 }
 
 fn main() {
-    // Configurazione standard di Tauri
+    // Inizializziamo il flag a false (simulazione ferma)
+    let is_running = Arc::new(AtomicBool::new(false));
+
     tauri::Builder::default()
-        // Registra il comando in modo che JS possa chiamare invoke('start_simulation')
-        .invoke_handler(tauri::generate_handler![start_simulation])
+        .manage(SimulationControl { is_running: is_running.clone() })
+        // Registriamo STOP e START
+        .invoke_handler(tauri::generate_handler![stop_simulation, start_simulation])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
