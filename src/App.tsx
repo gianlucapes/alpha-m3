@@ -23,20 +23,42 @@ function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [started, setStarted] = useState(false);
 
-  const drawSystem = (state: SystemState) => {
+  // MODIFICA 1: Aggiungiamo il parametro 'showStrings'
+  const drawSystem = (state: SystemState, showStrings: boolean) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // Pulizia e sfondo (grigio scuro "laboratorio")
+    ctx.fillStyle = "#1a1a1a"; 
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     state.particles.forEach((p) => {
+      
+      // --- DISEGNO DEL FILO (Solo se richiesto) ---
+      if (showStrings) {
+        ctx.beginPath();
+        ctx.moveTo(p.pos.x, 0);       // Punto di ancoraggio al soffitto
+        ctx.lineTo(p.pos.x, p.pos.y); // Centro della particella
+        ctx.strokeStyle = "rgba(100, 100, 100, 0.5)"; // Grigio sottile, semi-trasparente
+        ctx.lineWidth = 1;
+        // Effetto tratteggiato (opzionale, per stile tecnico)
+        ctx.setLineDash([2, 2]); 
+        ctx.stroke();
+        ctx.setLineDash([]); // Resetta per i cerchi
+      }
+
+      // --- DISEGNO DELLA PARTICELLA ---
       ctx.beginPath();
       ctx.arc(p.pos.x, p.pos.y, p.radius, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.8)"; 
-      ctx.lineWidth = 1;
+      
+      // Bordo
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.9)"; 
+      ctx.lineWidth = 2;
       ctx.stroke();
+
+      // Riempimento
       ctx.fillStyle = p.color;
       ctx.fill();
     });
@@ -45,19 +67,27 @@ function App() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
 
-    const setupListener = async () => {
+    const setup = async () => {
       unlisten = await listen<SystemState>("update-physics", (event) => {
-        drawSystem(event.payload);
+        // MODIFICA 2: Come facciamo a sapere qui se disegnare i fili?
+        // Trucco: Se l'evento ha timestamp 0 (o molto basso), è l'init.
+        // Ma la soluzione più pulita è usare una 'ref' per leggere lo stato 'started'
+        // dentro questo listener asincrono. 
+        // Per semplicità qui, useremo il timestamp dell'evento:
+        // Se time < 0.1, consideriamole appese.
+        const isInitialState = event.payload.timestamp === 0;
+        drawSystem(event.payload, isInitialState);
       });
+
+      invoke("init_simulation"); 
     };
 
-    setupListener();
+    setup();
 
-    return () => {
-      if (unlisten) unlisten();
-    };
-  }, []);
+    return () => { if (unlisten) unlisten(); };
+  }, []); // Dipendenze vuote
 
+  
   const handleStart = () => {
     if (!started) {
       invoke("start_simulation");
@@ -65,26 +95,14 @@ function App() {
     }
   };
 
-
-  // ==========================================
-  // 5. NUOVA FUNZIONE DI RESET
-  // ==========================================
-  // Questa funzione chiama il comando Rust che alza la bandierina "should_reset"
   const handleReset = async () => {
-    // 1. Diciamo a Rust di uccidere il thread
     await invoke("stop_simulation");
-    
-    // 2. Aggiorniamo lo stato locale per riabilitare il pulsante "Start"
     setStarted(false);
 
-    // 3. Pulizia Visiva Immediata
-    // Anche se il thread si ferma, l'ultimo disegno rimane sul canvas.
-    // Dobbiamo cancellarlo manualmente per far capire all'utente che è "vuoto".
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext("2d");
-    if (canvas && ctx) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
+    // INVECE DI PULIRE E BASTA:
+    // Richiamiamo l'inizializzazione. 
+    // Questo resetterà le posizioni e mostrerà le nuove particelle ferme.
+    invoke("init_simulation");
   };
 
   return (
