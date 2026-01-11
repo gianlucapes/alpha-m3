@@ -1,25 +1,20 @@
-// src-tauri/src/main.rs
-
-// Dichiariamo che esistono queste cartelle (moduli)
+use std::sync::{Arc, Mutex, atomic::AtomicBool}; // Aggiungi Mutex qui
 mod math;
 mod engine;
 mod interface;
 
-use tauri::Manager;
-use std::sync::{Arc, atomic::AtomicBool};
-
-// Nota come il percorso si è allungato: interface -> controller
-use interface::controller::{start_simulation, stop_simulation, SimulationContext};
-
-use crate::interface::controller;
+use interface::controller;
+use interface::controller::SimulationContext;
 
 fn main() {
-    // Stato condiviso inizializzato a 'false' (simulazione ferma)
+    // Inizializzazione dello stato globale
     let is_active = Arc::new(AtomicBool::new(false));
+    let particles = Arc::new(Mutex::new(Vec::new())); // <--- NUOVO: Vettore vuoto protetto
 
     tauri::Builder::default()
-        .manage(SimulationContext { is_active })
+        .manage(SimulationContext { is_active, particles }) // Passiamo entrambi
         .invoke_handler(tauri::generate_handler![
+            controller::init_simulation,   // <--- NUOVO COMANDO
             controller::start_simulation, 
             controller::stop_simulation
         ])
